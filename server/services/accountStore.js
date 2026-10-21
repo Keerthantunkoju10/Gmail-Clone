@@ -1,17 +1,37 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+// Check if running inside Serverless (Netlify Functions, AWS Lambda, Vercel)
+const isServerless = Boolean(
+  process.env.NETLIFY ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.LAMBDA_TASK_ROOT ||
+  process.env.VERCEL
+);
+
+// Determine writable data directory (use /tmp in serverless environments)
+const DATA_DIR = isServerless
+  ? path.join(os.tmpdir(), 'gmail-clone-data')
+  : path.join(__dirname, '..', 'data');
+
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 
 // Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+} catch (e) {
+  console.warn('Could not create data dir, using in-memory fallback:', e.message);
 }
 
-// Master encryption key derived from environment or machine unique key
+// In-memory fallback if filesystem is strictly read-only
+let memoryAccounts = [];
+
+// Master encryption key derived from environment or secure salt
 const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'gmail-clone-secure-master-salt-2026';
 const KEY = crypto.scryptSync(ENCRYPTION_SECRET, 'gmail-clone-salt', 32);
 const ALGORITHM = 'aes-256-gcm';
@@ -27,6 +47,7 @@ function encrypt(text) {
 
 function decrypt(encryptedText) {
   try {
+    if (!encryptedText) return '';
     const parts = encryptedText.split(':');
     if (parts.length !== 3) return encryptedText;
     const [ivHex, authTagHex, cipherText] = parts;
@@ -54,33 +75,31 @@ const ACCOUNT_COLORS = [
 ];
 
 function readRawAccounts() {
-  if (!fs.existsSync(ACCOUNTS_FILE)) {
-    return [];
+  if (fs.existsSync(ACCOUNTS_FILE)) {
+    try {
+      const data = fs.readFileSync(ACCOUNTS_FILE, 'utf8');
+      return JSON.parse(data || '[]');
+    } catch (e) {
+      console.error('Error reading accounts file:', e);
+    }
   }
-  try {
-    const data = fs.readFileSync(ACCOUNTS_FILE, 'utf8');
-    return JSON.parse(data || '[]');
-  } catch (e) {
-    console.error('Error reading accounts file:', e);
-    return [];
-  }
+  return memoryAccounts;
 }
 
 function writeRawAccounts(accounts) {
-  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf8');
+  memoryAccounts = [...accounts];
+  try {
+    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf8');
+  } catch (e) {
+    console.warn('Could not write accounts file (using in-memory):', e.message);
+  }
 }
 
-/**
- * Clean and format 16-character App Password (removes spaces, ensures lowercase/uppercase trimmed)
- */
 function normalizeAppPassword(rawPassword) {
   if (!rawPassword) return '';
   return rawPassword.replace(/\s+/g, '').trim();
 }
 
-/**
- * Format 16-character password into 4x4 display (xxxx xxxx xxxx xxxx)
- */
 function formatAppPassword(cleanPassword) {
   if (!cleanPassword || cleanPassword.length !== 16) return cleanPassword;
   return cleanPassword.match(/.{1,4}/g).join(' ');
@@ -88,8 +107,14 @@ function formatAppPassword(cleanPassword) {
 
 class AccountStore {
   // Returns safe accounts list without raw passwords
-  getSafeAccounts() {
-    const raw = readRawAccounts();
+  getSafeAccounts(headerAccounts = null) {
+    let raw = readRawAccounts();
+
+    // If server has no accounts, merge any accounts provided by client header (Stateless Serverless support)
+    if (raw.length === 0 && headerAccounts && Array.isArray(headerAccounts)) {
+      raw = headerAccounts;
+    }
+
     return raw.map(acc => ({
       id: acc.id,
       email: acc.email,
@@ -100,25 +125,37 @@ class AccountStore {
       status: acc.status || 'active',
       unreadCount: acc.unreadCount || 0,
       initial: (acc.name || acc.email)[0].toUpperCase(),
+      // Send vault token back so client can cache it for serverless cold starts
+      encryptedVault: acc.encryptedPassword || null,
     }));
   }
 
   // Returns full account with decrypted password for backend sync
-  getAccount(id) {
-    const raw = readRawAccounts();
-    const acc = raw.find(a => a.id === id);
+  getAccount(id, headerAccounts = null) {
+    let raw = readRawAccounts();
+    let acc = raw.find(a => a.id === id);
+
+    // Check header accounts if serverless container has no local state
+    if (!acc && headerAccounts && Array.isArray(headerAccounts)) {
+      acc = headerAccounts.find(a => a.id === id);
+    }
+
     if (!acc) return null;
     return {
       ...acc,
-      appPassword: decrypt(acc.encryptedPassword),
+      appPassword: acc.appPassword || decrypt(acc.encryptedPassword || ''),
     };
   }
 
-  getAllAccountsWithAuth() {
-    const raw = readRawAccounts();
+  getAllAccountsWithAuth(headerAccounts = null) {
+    let raw = readRawAccounts();
+    if (raw.length === 0 && headerAccounts && Array.isArray(headerAccounts)) {
+      raw = headerAccounts;
+    }
+
     return raw.map(acc => ({
       ...acc,
-      appPassword: decrypt(acc.encryptedPassword),
+      appPassword: acc.appPassword || decrypt(acc.encryptedPassword || ''),
     }));
   }
 
@@ -164,6 +201,7 @@ class AccountStore {
       name: accountObj.name,
       color: accountObj.color,
       isDefault: accountObj.isDefault,
+      encryptedVault: accountObj.encryptedPassword,
     };
   }
 
@@ -171,7 +209,6 @@ class AccountStore {
     const raw = readRawAccounts();
     const filtered = raw.filter(a => a.id !== id);
     if (filtered.length !== raw.length) {
-      // If deleted account was default, assign default to first remaining
       if (filtered.length > 0 && !filtered.some(a => a.isDefault)) {
         filtered[0].isDefault = true;
       }
@@ -204,4 +241,7 @@ module.exports = {
   ACCOUNT_COLORS,
   normalizeAppPassword,
   formatAppPassword,
+  encrypt,
+  decrypt,
+  isServerless,
 };

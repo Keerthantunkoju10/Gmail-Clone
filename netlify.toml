@@ -1,11 +1,22 @@
 [build]
-  base = "client"
   command = "npm run build"
-  publish = "dist"
+  publish = "client/dist"
 
 [build.environment]
   NODE_VERSION = "20"
 
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Direct all /api/* requests to Netlify serverless function
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true
+
+# Direct all remaining paths to index.html for React SPA client routing
 [[redirects]]
   from = "/*"
   to = "/index.html"

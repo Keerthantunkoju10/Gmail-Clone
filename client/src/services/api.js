@@ -1,13 +1,14 @@
 /**
  * Centralized API service with support for:
- * 1. Configured backend (via VITE_API_URL environment variable on Netlify)
+ * 1. Netlify Serverless Functions (auto-routed via /.netlify/functions/api)
  * 2. Local Vite proxy (/api) when running locally
- * 3. Client-side fallback mode with local storage persistence when deployed standalone on Netlify
+ * 3. Client-assisted stateless persistence across Serverless cold starts
+ * 4. Client-side fallback mode when offline
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
-// Fallback demo dataset for standalone Netlify preview
+// Fallback demo dataset for initial preview
 const FALLBACK_ACCOUNTS = [
   {
     id: 'demo-work',
@@ -58,7 +59,7 @@ const FALLBACK_MESSAGES = [
             <li><strong>Unified Inbox:</strong> View combined emails from all linked Gmail accounts with account badges.</li>
             <li><strong>Instant Account Switcher:</strong> Switch focus to any specific Gmail account at any time.</li>
             <li><strong>16-Digit App Password Support:</strong> Auto-formatted input (<code>xxxx xxxx xxxx xxxx</code>) with live credential verification.</li>
-            <li><strong>Live Send & Receive:</strong> Real IMAP message retrieval and SMTP email delivery with attachments.</li>
+            <li><strong>Serverless Ready:</strong> Runs natively on Netlify Functions with direct IMAP & SMTP execution.</li>
           </ul>
         </div>
         <p>Click <strong>"Add Account"</strong> in the top right account switcher to link your actual Gmail accounts!</p>
@@ -126,7 +127,6 @@ const AVAILABLE_COLORS = [
   { name: 'Teal', hex: '#12B5CB', bg: '#E4F7FB', text: '#007B83' },
 ];
 
-// In-memory / local storage cache for client fallback
 function getLocalAccounts() {
   const stored = localStorage.getItem('gmail_clone_local_accounts');
   if (stored) {
@@ -151,12 +151,30 @@ function saveLocalMessages(msgs) {
   localStorage.setItem('gmail_clone_local_messages', JSON.stringify(msgs));
 }
 
+// Helper to provide headers including stateless accounts vault for Serverless Lambdas
+function getHeaders(customHeaders = {}) {
+  const local = localStorage.getItem('gmail_clone_local_accounts');
+  const headers = { ...customHeaders };
+  if (local) {
+    headers['x-accounts'] = local;
+  }
+  return headers;
+}
+
 export const api = {
   // Accounts
   async getAccounts() {
     try {
-      const res = await fetch(`${API_BASE}/api/accounts`);
-      if (res.ok) return await res.json();
+      const res = await fetch(`${API_BASE}/api/accounts`, {
+        headers: getHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.hasRealAccounts && data.accounts?.length > 0) {
+          saveLocalAccounts(data.accounts);
+        }
+        return data;
+      }
     } catch (e) {
       console.warn('Backend unavailable, using client fallback:', e.message);
     }
@@ -171,14 +189,13 @@ export const api = {
     try {
       const res = await fetch(`${API_BASE}/api/accounts/test`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ email, appPassword }),
       });
       if (res.ok) return await res.json();
     } catch (e) {
       console.warn('Backend unavailable for test:', e.message);
     }
-    // Simulation fallback if backend isn't linked
     if (appPassword.replace(/\s+/g, '').length === 16) {
       return { success: true, message: 'Valid 16-character format verified' };
     }
@@ -189,23 +206,31 @@ export const api = {
     try {
       const res = await fetch(`${API_BASE}/api/accounts`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(accountData),
       });
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.account) {
+          const current = getLocalAccounts().filter(a => !a.isDemo);
+          current.push(data.account);
+          saveLocalAccounts(current);
+        }
+        return data;
+      }
       const err = await res.json();
       throw new Error(err.error || 'Failed to save account');
     } catch (e) {
       if (API_BASE) throw e;
       // Local fallback
       const cleanEmail = accountData.email.trim();
-      const current = getLocalAccounts();
+      const current = getLocalAccounts().filter(a => !a.isDemo);
       const newAcc = {
         id: `local-${Date.now()}`,
         email: cleanEmail,
         name: accountData.name || cleanEmail.split('@')[0],
         color: AVAILABLE_COLORS.find(c => c.hex === accountData.colorHex) || AVAILABLE_COLORS[0],
-        isDefault: false,
+        isDefault: current.length === 0,
         initial: (accountData.name || cleanEmail)[0].toUpperCase(),
         unreadCount: 0,
       };
@@ -217,7 +242,10 @@ export const api = {
 
   async deleteAccount(id) {
     try {
-      const res = await fetch(`${API_BASE}/api/accounts/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${API_BASE}/api/accounts/${id}`, {
+        method: 'DELETE',
+        headers: getHeaders(),
+      });
       if (res.ok) return await res.json();
     } catch (e) {}
     const filtered = getLocalAccounts().filter(a => a.id !== id);
@@ -227,7 +255,10 @@ export const api = {
 
   async setDefaultAccount(id) {
     try {
-      const res = await fetch(`${API_BASE}/api/accounts/${id}/default`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/accounts/${id}/default`, {
+        method: 'POST',
+        headers: getHeaders(),
+      });
       if (res.ok) return await res.json();
     } catch (e) {}
     const accs = getLocalAccounts().map(a => ({ ...a, isDefault: a.id === id }));
@@ -239,7 +270,9 @@ export const api = {
   async getMessages(folder = 'inbox', accountId = 'all', search = '') {
     try {
       const params = new URLSearchParams({ folder, accountId, search });
-      const res = await fetch(`${API_BASE}/api/messages?${params.toString()}`);
+      const res = await fetch(`${API_BASE}/api/messages?${params.toString()}`, {
+        headers: getHeaders(),
+      });
       if (res.ok) return await res.json();
     } catch (e) {}
     let msgs = getLocalMessages();
@@ -264,7 +297,9 @@ export const api = {
 
   async getMessageDetail(accountId, folder, uid) {
     try {
-      const res = await fetch(`${API_BASE}/api/messages/${accountId}/${folder}/${uid}`);
+      const res = await fetch(`${API_BASE}/api/messages/${accountId}/${folder}/${uid}`, {
+        headers: getHeaders(),
+      });
       if (res.ok) return await res.json();
     } catch (e) {}
     const msgs = getLocalMessages();
@@ -277,6 +312,7 @@ export const api = {
     try {
       const res = await fetch(`${API_BASE}/api/messages/send`, {
         method: 'POST',
+        headers: getHeaders(),
         body: formData,
       });
       if (res.ok) return await res.json();
@@ -284,7 +320,6 @@ export const api = {
       throw new Error(err.error || 'Failed to send');
     } catch (e) {
       if (API_BASE) throw e;
-      // Local fallback sending
       return { success: true, messageId: `<mock-${Date.now()}@gmail.com>` };
     }
   },
@@ -293,7 +328,7 @@ export const api = {
     try {
       await fetch(`${API_BASE}/api/messages/star`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ accountId, folder, uid, isStarred }),
       });
     } catch (e) {}
@@ -310,7 +345,7 @@ export const api = {
     try {
       await fetch(`${API_BASE}/api/messages/read`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ accountId, folder, uid, isRead }),
       });
     } catch (e) {}
@@ -327,7 +362,7 @@ export const api = {
     try {
       await fetch(`${API_BASE}/api/messages/delete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ accountId, folder, uid }),
       });
     } catch (e) {}
