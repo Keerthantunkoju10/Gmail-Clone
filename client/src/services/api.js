@@ -1,15 +1,12 @@
 /**
- * Centralized API service with support for:
- * 1. Netlify Serverless Functions (auto-routed via /.netlify/functions/api)
- * 2. Local Vite proxy (/api) when running locally
- * 3. Client-assisted stateless persistence across Serverless cold starts
- * 4. Client-side fallback mode when offline
+ * Production API client for Netlify Serverless Backend and Local Development
+ * Routes all API requests directly through the Netlify Serverless Function (or local Express server).
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
-// Fallback demo dataset for initial preview
-const FALLBACK_ACCOUNTS = [
+// Fallback demo accounts for initial empty state before any account is linked
+const INITIAL_DEMO_ACCOUNTS = [
   {
     id: 'demo-work',
     email: 'alex.work@gmail.com',
@@ -32,92 +29,6 @@ const FALLBACK_ACCOUNTS = [
   },
 ];
 
-const FALLBACK_MESSAGES = [
-  {
-    id: 'demo-msg-1',
-    uid: 101,
-    folder: 'inbox',
-    subject: 'Welcome to your Interlinked Gmail Clone! 🚀',
-    from: { name: 'Google Cloud Team', address: 'cloud-updates@google.com' },
-    to: { name: 'Alex Work', address: 'alex.work@gmail.com' },
-    date: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
-    snippet: 'Manage all your Gmail accounts in one unified inbox with 16-character Google App Passwords...',
-    isStarred: true,
-    isRead: false,
-    hasAttachments: false,
-    accountId: 'demo-work',
-    accountEmail: 'alex.work@gmail.com',
-    accountName: 'Alex Work',
-    accountColor: { name: 'Blue', hex: '#1A73E8', bg: '#E8F0FE', text: '#1967D2' },
-    html: `
-      <div style="font-family: Roboto, Arial, sans-serif; max-width: 650px; color: #202124; line-height: 1.6;">
-        <h2 style="color: #1a73e8; margin-bottom: 8px;">Welcome to your Interlinked Gmail Clone</h2>
-        <p>This web client connects seamlessly to Gmail using <strong>16-digit Google App Passwords</strong> over secure IMAP & SMTP.</p>
-        <div style="background: #f8f9fa; border-left: 4px solid #1a73e8; padding: 14px 18px; margin: 20px 0; border-radius: 4px;">
-          <h4 style="margin: 0 0 8px 0; color: #1a73e8;">Key Features Ready for You:</h4>
-          <ul style="margin: 0; padding-left: 20px;">
-            <li><strong>Unified Inbox:</strong> View combined emails from all linked Gmail accounts with account badges.</li>
-            <li><strong>Instant Account Switcher:</strong> Switch focus to any specific Gmail account at any time.</li>
-            <li><strong>16-Digit App Password Support:</strong> Auto-formatted input (<code>xxxx xxxx xxxx xxxx</code>) with live credential verification.</li>
-            <li><strong>Serverless Ready:</strong> Runs natively on Netlify Functions with direct IMAP & SMTP execution.</li>
-          </ul>
-        </div>
-        <p>Click <strong>"Add Account"</strong> in the top right account switcher to link your actual Gmail accounts!</p>
-      </div>
-    `,
-  },
-  {
-    id: 'demo-msg-2',
-    uid: 102,
-    folder: 'inbox',
-    subject: 'Project roadmap review: Q4 sprint updates and milestones',
-    from: { name: 'Sarah Lin', address: 'sarah.lin@techcorp.io' },
-    to: { name: 'Alex Work', address: 'alex.work@gmail.com' },
-    date: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-    snippet: 'Hey Alex, attached is the updated sprint retrospective document. Let me know if you want any revisions before tomorrow...',
-    isStarred: false,
-    isRead: false,
-    hasAttachments: true,
-    accountId: 'demo-work',
-    accountEmail: 'alex.work@gmail.com',
-    accountName: 'Alex Work',
-    accountColor: { name: 'Blue', hex: '#1A73E8', bg: '#E8F0FE', text: '#1967D2' },
-    html: `
-      <div style="font-family: Roboto, Arial, sans-serif; line-height: 1.6; color: #202124;">
-        <p>Hi Alex,</p>
-        <p>Attached is the updated sprint retrospective document for our Q4 product release.</p>
-        <p>Let me know if you want any revisions before tomorrow's team sync.</p>
-      </div>
-    `,
-    attachments: [
-      { filename: 'Q4_Roadmap_Final.pdf', size: 142000, contentType: 'application/pdf' },
-    ],
-  },
-  {
-    id: 'demo-msg-3',
-    uid: 201,
-    folder: 'inbox',
-    subject: 'Weekend hiking plans at Mount Rainier 🌲',
-    from: { name: 'Marcus Brody', address: 'marcus.brody@outdoors.org' },
-    to: { name: 'Alex Personal', address: 'alex.personal@gmail.com' },
-    date: new Date(Date.now() - 1000 * 60 * 60 * 6).toISOString(),
-    snippet: 'Hey, the weather forecast for Saturday looks sunny with crisp 62°F. Trails are open and we have permits ready...',
-    isStarred: true,
-    isRead: true,
-    hasAttachments: false,
-    accountId: 'demo-personal',
-    accountEmail: 'alex.personal@gmail.com',
-    accountName: 'Alex Personal',
-    accountColor: { name: 'Green', hex: '#34A853', bg: '#E6F4EA', text: '#137333' },
-    html: `
-      <div style="font-family: Roboto, Arial, sans-serif; line-height: 1.6; color: #202124;">
-        <p>Hey Alex,</p>
-        <p>The weather forecast for Saturday looks sunny with crisp 62°F. Trails are fully open and we have the morning permits ready.</p>
-      </div>
-    `,
-  },
-];
-
 const AVAILABLE_COLORS = [
   { name: 'Red', hex: '#EA4335', bg: '#FCE8E6', text: '#C5221F' },
   { name: 'Blue', hex: '#1A73E8', bg: '#E8F0FE', text: '#1967D2' },
@@ -127,42 +38,34 @@ const AVAILABLE_COLORS = [
   { name: 'Teal', hex: '#12B5CB', bg: '#E4F7FB', text: '#007B83' },
 ];
 
-function getLocalAccounts() {
+function getLocalVault() {
   const stored = localStorage.getItem('gmail_clone_local_accounts');
   if (stored) {
     try { return JSON.parse(stored); } catch (e) {}
   }
-  return FALLBACK_ACCOUNTS;
+  return [];
 }
 
-function saveLocalAccounts(accs) {
-  localStorage.setItem('gmail_clone_local_accounts', JSON.stringify(accs));
-}
-
-function getLocalMessages() {
-  const stored = localStorage.getItem('gmail_clone_local_messages');
-  if (stored) {
-    try { return JSON.parse(stored); } catch (e) {}
+function saveLocalVault(accounts) {
+  if (Array.isArray(accounts)) {
+    localStorage.setItem('gmail_clone_local_accounts', JSON.stringify(accounts));
   }
-  return FALLBACK_MESSAGES;
 }
 
-function saveLocalMessages(msgs) {
-  localStorage.setItem('gmail_clone_local_messages', JSON.stringify(msgs));
-}
-
-// Helper to provide headers including stateless accounts vault for Serverless Lambdas
+// Attach local vault headers so Netlify serverless instances can authenticate across cold starts
 function getHeaders(customHeaders = {}) {
-  const local = localStorage.getItem('gmail_clone_local_accounts');
+  const localVault = getLocalVault();
   const headers = { ...customHeaders };
-  if (local) {
-    headers['x-accounts'] = local;
+  if (localVault.length > 0) {
+    headers['x-accounts'] = JSON.stringify(localVault);
   }
   return headers;
 }
 
 export const api = {
-  // Accounts
+  /**
+   * Fetch all linked Gmail accounts from the server
+   */
   async getAccounts() {
     try {
       const res = await fetch(`${API_BASE}/api/accounts`, {
@@ -170,90 +73,110 @@ export const api = {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.hasRealAccounts && data.accounts?.length > 0) {
-          saveLocalAccounts(data.accounts);
+        // If server returned accounts, update local vault cache
+        if (data.hasRealAccounts && Array.isArray(data.accounts)) {
+          saveLocalVault(data.accounts);
         }
         return data;
       }
-    } catch (e) {
-      console.warn('Backend unavailable, using client fallback:', e.message);
+    } catch (err) {
+      console.warn('Network error reaching backend server:', err.message);
     }
+
+    // If completely offline or fresh load with no accounts
+    const cached = getLocalVault();
+    if (cached.length > 0) {
+      return {
+        hasRealAccounts: true,
+        accounts: cached,
+        availableColors: AVAILABLE_COLORS,
+      };
+    }
+
     return {
       hasRealAccounts: false,
-      accounts: getLocalAccounts(),
+      accounts: INITIAL_DEMO_ACCOUNTS,
       availableColors: AVAILABLE_COLORS,
     };
   },
 
+  /**
+   * Test 16-digit Google App Password directly against Gmail IMAP via Netlify server
+   */
   async testAccountCredentials(email, appPassword) {
+    const cleanPassword = appPassword.replace(/\s+/g, '').trim();
+
     try {
       const res = await fetch(`${API_BASE}/api/accounts/test`, {
         method: 'POST',
         headers: getHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ email, appPassword }),
+        body: JSON.stringify({ email, appPassword: cleanPassword }),
       });
-      if (res.ok) return await res.json();
-    } catch (e) {
-      console.warn('Backend unavailable for test:', e.message);
-    }
-    if (appPassword.replace(/\s+/g, '').length === 16) {
-      return { success: true, message: 'Valid 16-character format verified' };
-    }
-    return { success: false, error: 'App password must be 16 characters' };
-  },
 
-  async addAccount(accountData) {
-    try {
-      const res = await fetch(`${API_BASE}/api/accounts`, {
-        method: 'POST',
-        headers: getHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(accountData),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.account) {
-          const current = getLocalAccounts().filter(a => !a.isDemo);
-          current.push(data.account);
-          saveLocalAccounts(current);
-        }
-        return data;
-      }
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to save account');
-    } catch (e) {
-      if (API_BASE) throw e;
-      // Local fallback
-      const cleanEmail = accountData.email.trim();
-      const current = getLocalAccounts().filter(a => !a.isDemo);
-      const newAcc = {
-        id: `local-${Date.now()}`,
-        email: cleanEmail,
-        name: accountData.name || cleanEmail.split('@')[0],
-        color: AVAILABLE_COLORS.find(c => c.hex === accountData.colorHex) || AVAILABLE_COLORS[0],
-        isDefault: current.length === 0,
-        initial: (accountData.name || cleanEmail)[0].toUpperCase(),
-        unreadCount: 0,
+      // Always parse server response whether 200 or 400
+      const data = await res.json();
+      return data;
+    } catch (err) {
+      console.error('Server test error:', err);
+      return {
+        success: false,
+        error: `Could not reach server: ${err.message}. Please check your connection.`,
       };
-      current.push(newAcc);
-      saveLocalAccounts(current);
-      return { success: true, account: newAcc };
     }
   },
 
+  /**
+   * Add a new Gmail account using 16-character App Password
+   */
+  async addAccount(accountData) {
+    const res = await fetch(`${API_BASE}/api/accounts`, {
+      method: 'POST',
+      headers: getHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(accountData),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to save account');
+    }
+
+    // Save added account to client vault
+    if (data.account) {
+      const currentVault = getLocalVault().filter(a => a.id !== data.account.id && !a.isDemo);
+      currentVault.push(data.account);
+      saveLocalVault(currentVault);
+    }
+
+    return data;
+  },
+
+  /**
+   * Remove a linked account
+   */
   async deleteAccount(id) {
+    // Remove from local cache immediately
+    const filtered = getLocalVault().filter(a => a.id !== id);
+    saveLocalVault(filtered);
+
     try {
       const res = await fetch(`${API_BASE}/api/accounts/${id}`, {
         method: 'DELETE',
         headers: getHeaders(),
       });
       if (res.ok) return await res.json();
-    } catch (e) {}
-    const filtered = getLocalAccounts().filter(a => a.id !== id);
-    saveLocalAccounts(filtered);
+    } catch (e) {
+      console.warn('Backend delete request failed:', e.message);
+    }
     return { success: true };
   },
 
+  /**
+   * Set primary default account
+   */
   async setDefaultAccount(id) {
+    const updated = getLocalVault().map(a => ({ ...a, isDefault: a.id === id }));
+    saveLocalVault(updated);
+
     try {
       const res = await fetch(`${API_BASE}/api/accounts/${id}/default`, {
         method: 'POST',
@@ -261,113 +184,106 @@ export const api = {
       });
       if (res.ok) return await res.json();
     } catch (e) {}
-    const accs = getLocalAccounts().map(a => ({ ...a, isDefault: a.id === id }));
-    saveLocalAccounts(accs);
     return { success: true };
   },
 
-  // Messages
+  /**
+   * Fetch messages via IMAP through Netlify server
+   */
   async getMessages(folder = 'inbox', accountId = 'all', search = '') {
+    const params = new URLSearchParams({
+      folder,
+      accountId,
+      search,
+    });
+
     try {
-      const params = new URLSearchParams({ folder, accountId, search });
       const res = await fetch(`${API_BASE}/api/messages?${params.toString()}`, {
         headers: getHeaders(),
       });
-      if (res.ok) return await res.json();
-    } catch (e) {}
-    let msgs = getLocalMessages();
-    if (accountId && accountId !== 'all') {
-      msgs = msgs.filter(m => m.accountId === accountId);
+
+      if (res.ok) {
+        return await res.json();
+      }
+
+      const errData = await res.json();
+      throw new Error(errData.error || `HTTP ${res.status}: Failed to fetch messages`);
+    } catch (err) {
+      console.warn('Server fetch messages error:', err.message);
+      throw err;
     }
-    if (folder && folder !== 'all') {
-      if (folder === 'starred') msgs = msgs.filter(m => m.isStarred);
-      else msgs = msgs.filter(m => m.folder === folder);
-    }
-    if (search) {
-      const q = search.toLowerCase();
-      msgs = msgs.filter(m =>
-        m.subject.toLowerCase().includes(q) ||
-        m.from.name.toLowerCase().includes(q) ||
-        m.from.address.toLowerCase().includes(q) ||
-        m.snippet.toLowerCase().includes(q)
-      );
-    }
-    return { count: msgs.length, messages: msgs };
   },
 
+  /**
+   * Fetch full email RFC822 detail and attachments
+   */
   async getMessageDetail(accountId, folder, uid) {
-    try {
-      const res = await fetch(`${API_BASE}/api/messages/${accountId}/${folder}/${uid}`, {
-        headers: getHeaders(),
-      });
-      if (res.ok) return await res.json();
-    } catch (e) {}
-    const msgs = getLocalMessages();
-    const found = msgs.find(m => m.accountId === accountId && String(m.uid) === String(uid));
-    if (found) return found;
-    throw new Error('Message not found');
-  },
+    const res = await fetch(`${API_BASE}/api/messages/${accountId}/${folder}/${uid}`, {
+      headers: getHeaders(),
+    });
 
-  async sendMessage(formData) {
-    try {
-      const res = await fetch(`${API_BASE}/api/messages/send`, {
-        method: 'POST',
-        headers: getHeaders(),
-        body: formData,
-      });
-      if (res.ok) return await res.json();
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to send');
-    } catch (e) {
-      if (API_BASE) throw e;
-      return { success: true, messageId: `<mock-${Date.now()}@gmail.com>` };
+    if (res.ok) {
+      return await res.json();
     }
+
+    const err = await res.json();
+    throw new Error(err.error || `Failed to load message detail`);
   },
 
+  /**
+   * Send email via Gmail SMTP using selected account
+   */
+  async sendMessage(formData) {
+    const res = await fetch(`${API_BASE}/api/messages/send`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: formData,
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to send email via SMTP');
+    }
+
+    return data;
+  },
+
+  /**
+   * Star / Unstar email
+   */
   async toggleStar(accountId, folder, uid, isStarred) {
-    try {
-      await fetch(`${API_BASE}/api/messages/star`, {
-        method: 'POST',
-        headers: getHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ accountId, folder, uid, isStarred }),
-      });
-    } catch (e) {}
-    const msgs = getLocalMessages().map(m =>
-      m.accountId === accountId && String(m.uid) === String(uid)
-        ? { ...m, isStarred }
-        : m
-    );
-    saveLocalMessages(msgs);
+    const res = await fetch(`${API_BASE}/api/messages/star`, {
+      method: 'POST',
+      headers: getHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ accountId, folder, uid, isStarred }),
+    });
+    if (res.ok) return await res.json();
     return { success: true, isStarred };
   },
 
+  /**
+   * Mark as Read / Unread
+   */
   async markRead(accountId, folder, uid, isRead) {
-    try {
-      await fetch(`${API_BASE}/api/messages/read`, {
-        method: 'POST',
-        headers: getHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ accountId, folder, uid, isRead }),
-      });
-    } catch (e) {}
-    const msgs = getLocalMessages().map(m =>
-      m.accountId === accountId && String(m.uid) === String(uid)
-        ? { ...m, isRead }
-        : m
-    );
-    saveLocalMessages(msgs);
+    const res = await fetch(`${API_BASE}/api/messages/read`, {
+      method: 'POST',
+      headers: getHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ accountId, folder, uid, isRead }),
+    });
+    if (res.ok) return await res.json();
     return { success: true, isRead };
   },
 
+  /**
+   * Move email to Trash
+   */
   async deleteMessage(accountId, folder, uid) {
-    try {
-      await fetch(`${API_BASE}/api/messages/delete`, {
-        method: 'POST',
-        headers: getHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ accountId, folder, uid }),
-      });
-    } catch (e) {}
-    const msgs = getLocalMessages().filter(m => !(m.accountId === accountId && String(m.uid) === String(uid)));
-    saveLocalMessages(msgs);
+    const res = await fetch(`${API_BASE}/api/messages/delete`, {
+      method: 'POST',
+      headers: getHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ accountId, folder, uid }),
+    });
+    if (res.ok) return await res.json();
     return { success: true };
   },
 };
