@@ -1,0 +1,18 @@
+[
+  {
+    "id": "sample-account-id",
+    "email": "user@gmail.com",
+    "name": "Work Mail",
+    "encryptedPassword": "ivHex:authTagHex:cipherText",
+    "color": {
+      "name": "Blue",
+      "hex": "#1A73E8",
+      "bg": "#E8F0FE",
+      "text": "#1967D2"
+    },
+    "isDefault": true,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "status": "active"
+  }
+]
